@@ -9,11 +9,11 @@ from random import randint
 
 
 
-crs = get_crs(513)
-crs = [crs[:256],crs[256:512],crs[512]]
+crs = get_crs(131)
+crs = [crs[:128],crs[128],crs[129],crs[130]]
 
-num_ciphertexts = 254
-num_blinders = 2
+num_ciphertexts = 124
+num_blinders = 4
 
 [ciphertexts_R, ciphertexts_S] = get_ciphertexts(num_ciphertexts)
 

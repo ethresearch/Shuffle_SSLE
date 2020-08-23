@@ -39,7 +39,7 @@ def shuffle(ciphertexts_R, ciphertexts_S):
 
 def shuffle_prove(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_T, ciphertexts_U, shuffle, r):
 
-    [crs_g, crs_h, u] = crs[:]
+    [crs_g, u, crs_se1, crs_se2] = crs[:]
     n = len(ciphertexts_R) + num_blinders
     logn = int(math.log(n,2))
 
@@ -50,7 +50,7 @@ def shuffle_prove(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_T
     for i in range(len(ciphertexts_R), n):
         vec_m[i] = randbelow(curve_order)
 
-    M = compute_multiexp(crs_h[:], vec_m[:])
+    M = compute_multiexp(crs_g[:], vec_m[:])
 
     current_hash = hash_integers([int(M[0]), int(M[1]), int(M[2])])
     for i in range(len(ciphertexts_T)):
@@ -73,10 +73,9 @@ def shuffle_prove(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_T
     for i in range(len(ciphertexts_R), n):
         vec_a_shuffled[i] = randbelow(curve_order)
 
-    A = compute_multiexp(crs_h[:], vec_a_shuffled[:])
+    A = compute_multiexp(crs_g[:], vec_a_shuffled[:])
 
-    current_hash = hash_integers([current_hash, int(M[0]), int(M[1]), int(M[2]),
-    int(A[0]), int(A[1]), int(A[2])])
+    current_hash = hash_integers([current_hash, int(A[0]), int(A[1]), int(A[2])])
     alpha = current_hash % curve_order
 
     current_hash = hash_integers([current_hash])
@@ -90,24 +89,12 @@ def shuffle_prove(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_T
     for i in range(len(ciphertexts_R)):
         gprod = (gprod * vec_gprod[i] ) % curve_order
 
-    A1 = crs_h[0]
-    for i in range(1,n):
-        A1 = add(A1, crs_h[i])
-    A1 = multiply(A1, beta)
-    A1 = add(A1, multiply(M, alpha))
-    A1 = add(A1, A)
-
     start = timer()
-    [current_hash, gprod_proof, inner_prod_info] = gprod_prove(current_hash, crs[:],
-    A1, gprod, vec_gprod[:], len(ciphertexts_R),  n, logn)
+    [current_hash, gprod_proof, inner_prod_info] = gprod_prove(current_hash, crs[:], vec_gprod[:], len(ciphertexts_R), gprod, n, logn)
     end = timer()
     print("gprod time = ", end - start)
 
-    [crs_h_scaled, vec_b, vec_c, inner_prod] = inner_prod_info[:]
-
-    while len(ciphertexts_T) < n:
-        ciphertexts_T.append(Z1)
-        ciphertexts_U.append(Z1)
+    [crs_h, vec_b, vec_c, inner_prod] = inner_prod_info[:]
 
     start = timer()
     R = compute_multiexp(ciphertexts_R[:], vec_a[:])
@@ -115,13 +102,30 @@ def shuffle_prove(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_T
     end = timer()
     print("R, S time = ", end - start, len(vec_a[:len(ciphertexts_R)]))
 
-    T = multiply(R, r); U = multiply(S, r)
+    vec_gammas = [0]* num_blinders; vec_deltas = [0] * num_blinders;
+    current_hash = hash_integers([current_hash, int(A[0]), int(A[1]), int(A[2])])
+    for i in range(num_blinders):
+        current_hash = hash_integers([current_hash])
+        vec_gammas[i] = current_hash % curve_order
+        current_hash = hash_integers([current_hash])
+        vec_deltas[i] = current_hash % curve_order
 
-    (current_hash, sameexp_proof) = sameexp_prove(current_hash, R, S, T, U, r)
+    blinder_t = 0; blinder_u = 0;
+    for i in range(num_blinders):
+        blinder_t = (blinder_t + vec_gammas[i] * vec_a_shuffled[len(ciphertexts_R) + i]) % curve_order;
+        blinder_u = (blinder_u + vec_deltas[i] * vec_a_shuffled[len(ciphertexts_R) + i]) % curve_order;
 
+    T = add(multiply(R, r), multiply(crs_se1, blinder_t));
+    U = add(multiply(S, r), multiply(crs_se2, blinder_u));
+
+    for i in range(num_blinders):
+        ciphertexts_T.append(multiply(crs_se1, vec_gammas[i]))
+        ciphertexts_U.append(multiply(crs_se2, vec_deltas[i]))
+
+    (current_hash, sameexp_proof) = sameexp_prove(current_hash, R, S, crs_se1, crs_se2, T, U, r, blinder_t, blinder_u)
 
     start = timer()
-    crs = [crs_g[:], crs_h[:], crs_h_scaled[:], u]
+    crs = [crs_g[:], crs_h[:], u]
     [current_hash, gprod_and_multiexp_proof] = prove_multiexp_and_gprod_inner(current_hash,
     crs[:], vec_b[:], vec_c[:],inner_prod,
     ciphertexts_T[:], ciphertexts_U[:], vec_a_shuffled[:], n, logn)
@@ -132,29 +136,25 @@ def shuffle_prove(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_T
 
 def shuffle_verify(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_T, ciphertexts_U, shuffle_proof):
 
-    [crs_g, crs_h, u] = crs[:]
+    [crs_g, u, crs_se1, crs_se2] = crs[:]
     n = len(ciphertexts_R) + num_blinders
     logn = int(math.log(n,2))
 
     [M, A, gprod_proof, T, U, sameexp_proof, inner_proof] = shuffle_proof[:]
 
-    start = timer()
     current_hash = hash_integers([int(M[0]), int(M[1]), int(M[2])])
     for i in range(len(ciphertexts_T)):
         current_hash = hash_integers([current_hash, int(ciphertexts_T[i][0]),
         int(ciphertexts_T[i][1]), int(ciphertexts_T[i][2]),
         int(ciphertexts_U[i][0]), int(ciphertexts_U[i][1]),
         int(ciphertexts_U[i][2])])
-    end = timer()
-    hash_time =  end - start
 
     vec_a = [0] * len(ciphertexts_R)
     for i in range(len(ciphertexts_R)):
         vec_a[i] = current_hash % curve_order
         current_hash = hash_integers([current_hash])
 
-    current_hash = hash_integers([current_hash, int(M[0]), int(M[1]), int(M[2]),
-    int(A[0]), int(A[1]), int(A[2])])
+    current_hash = hash_integers([current_hash, int(A[0]), int(A[1]), int(A[2])])
     alpha = current_hash % curve_order
 
     current_hash = hash_integers([current_hash])
@@ -164,9 +164,9 @@ def shuffle_verify(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_
     for i in range(len(ciphertexts_R)):
         gprod = (gprod * (vec_a[i] + i * alpha + beta) ) % curve_order
 
-    A1 = crs_h[0]
+    A1 = crs_g[0]
     for i in range(1,n):
-        A1 = add(A1, crs_h[i])
+        A1 = add(A1, crs_g[i])
     A1 = multiply(A1, beta)
     A1 = add(A1, multiply(M, alpha))
     A1 = add(A1, A)
@@ -175,35 +175,40 @@ def shuffle_verify(crs, num_blinders, ciphertexts_R, ciphertexts_S, ciphertexts_
     [current_hash, inner_prod_info] = gprod_verify(current_hash, crs[:], A1, len(ciphertexts_R), gprod,
     gprod_proof[:],n,logn)
     end = timer()
-    gprod_time =  end - start
-    [vec_crs_h_exp, C, inner_prod, len_gprod] = inner_prod_info[:]
+    print("gprod time = ", end - start)
+    [vec_crs_h_exp, B, C, inner_prod, len_gprod] = inner_prod_info[:]
 
     start = timer()
     R = compute_multiexp(ciphertexts_R[:], vec_a[:])
     S = compute_multiexp(ciphertexts_S[:], vec_a[:])
     end = timer()
 
-    R_S_time = end - start
+    print("R, S time = ", end - start)
 
-    (current_hash, b) = sameexp_verify(current_hash, R, S, T, U, sameexp_proof[:])
+    vec_gammas = [0]* num_blinders; vec_deltas = [0] * num_blinders;
+    current_hash = hash_integers([current_hash, int(A[0]), int(A[1]), int(A[2])])
+    for i in range(num_blinders):
+        current_hash = hash_integers([current_hash])
+        vec_gammas[i] = current_hash % curve_order
+        current_hash = hash_integers([current_hash])
+        vec_deltas[i] = current_hash % curve_order
+
+    (current_hash, b) = sameexp_verify(current_hash, R, S, crs_se1, crs_se2, T, U, sameexp_proof[:])
 
     if b != 1:
         print("VERIFICATION FAILURE: does not have same exponent")
         return 0
 
-    while len(ciphertexts_T) < n:
-        ciphertexts_T.append(Z1)
-        ciphertexts_U.append(Z1)
+    for i in range(num_blinders):
+        ciphertexts_T.append(multiply(crs_se1, vec_gammas[i]))
+        ciphertexts_U.append(multiply(crs_se2, vec_deltas[i]))
 
 
     start = timer()
-    [current_hash, b] = verify_multiexp_and_gprod_inner(current_hash, crs[:], vec_crs_h_exp, len_gprod, C, inner_prod,
+    [current_hash, b] = verify_multiexp_and_gprod_inner(current_hash, crs[:], vec_crs_h_exp, len_gprod, B, C, inner_prod,
       ciphertexts_T[:], ciphertexts_U[:], A, T, U, inner_proof[:],n, logn)
     end = timer()
 
-    print("hash_time = ", hash_time)
-    print("R_S_time = ", R_S_time)
-    print("gprod_time = ", gprod_time)
     print("inner product time = ", end - start)
 
     if b != 1:

@@ -5,9 +5,9 @@ from fiat_shamir import hash_integers
 from utils import compute_multiexp, compute_innerprod, inverse, curve_order, int_to_binaryintarray
 
 
-def gprod_prove_outer(current_hash, crs, A1, gprod, vec_a, len_gprod, n, logn):
+def gprod_prove_outer(current_hash, crs, vec_a, len_gprod, gprod, n, logn):
 
-    [crs_g, crs_h, u] = crs[:]
+    [crs_g, u, crs_se1, crs_se2] = crs[:]
 
     vec_b = [0] * n
     vec_b[0] = 1
@@ -20,8 +20,7 @@ def gprod_prove_outer(current_hash, crs, A1, gprod, vec_a, len_gprod, n, logn):
     B = compute_multiexp(crs_g[:], vec_b[:])
     blinder = compute_innerprod(vec_a[len_gprod:],vec_b[len_gprod:])
 
-    current_hash = hash_integers([current_hash, int(A1[0]), int(A1[1]), int(A1[2]),
-    gprod, blinder, int(B[0]), int(B[1]), int(B[2])])
+    current_hash = hash_integers([current_hash, gprod, blinder, int(B[0]), int(B[1]), int(B[2])])
     x = current_hash % curve_order; inv_x =inverse(x);
 
     vec_c = [0] * n;
@@ -38,16 +37,15 @@ def gprod_prove_outer(current_hash, crs, A1, gprod, vec_a, len_gprod, n, logn):
     for i in range(len_gprod, n):
         vec_c[i] = (vec_a[i] * pow_x) % curve_order
 
-    crs_h_new = [0]*n; pow_inv_x = inv_x
+    crs_h = [0]*n; pow_inv_x = inv_x
     for i in range(len_gprod - 1):
-        crs_h_new[i] = multiply(crs_h[i+1], pow_inv_x)
+        crs_h[i] = multiply(crs_g[i+1], pow_inv_x)
         pow_inv_x = pow_inv_x * inv_x % curve_order
-    crs_h_new[len_gprod-1] = multiply(crs_h[0], pow_inv_x)
+    crs_h[len_gprod-1] = multiply(crs_g[0], pow_inv_x)
 
     pow_inv_x = pow_inv_x * inv_x % curve_order
     for i in range(len_gprod, n):
-        crs_h_new[i] = multiply(crs_h[i], pow_inv_x)
-    crs_h = crs_h_new[:]
+        crs_h[i] = multiply(crs_g[i], pow_inv_x)
 
     inner_prod = (blinder * (x ** (len_gprod+1)) + gprod * (x ** len_gprod) - 1) % curve_order
 
@@ -113,22 +111,20 @@ def gprod_prove_inner(current_hash, crs, vec_b, vec_c,inner_prod, n, logn):
 
     return [current_hash, [R, blinder_2, proof[:], vec_b[0], vec_c[0]]]
 
-def gprod_verify_outer(current_hash, crs, A1, len_gprod, gprod, gprod_proof, n, logn):
+def gprod_verify_outer(current_hash, crs, A, len_gprod, gprod, gprod_proof, n, logn):
 
-    [crs_g, crs_h, u] = crs[:]
+    [crs_g, u, crs_se1, crs_se2] = crs[:]
     [B, blinder] = gprod_proof[:]
 
-    current_hash = hash_integers([current_hash, int(A1[0]), int(A1[1]), int(A1[2]),
-    gprod, blinder, int(B[0]), int(B[1]), int(B[2])])
+    current_hash = hash_integers([current_hash, gprod, blinder, int(B[0]), int(B[1]), int(B[2])])
     x = current_hash % curve_order; inv_x =inverse(x);
 
-    C = crs_h[0]
+    C = crs_g[0]
     for i in range(1,len_gprod):
-        C = add( C, crs_h[i])
+        C = add( C, crs_g[i])
 
     C = multiply(C, curve_order - inv_x)
-    C = add(C, A1)
-    C = add(C, B)
+    C = add(C, A)
 
     vec_crs_h_exp = [1]*n; pow_inv_x = inv_x
     for i in range(1,len_gprod):
@@ -146,7 +142,7 @@ def gprod_verify_outer(current_hash, crs, A1, len_gprod, gprod, gprod_proof, n, 
 #    [current_hash, b] = gprod_verify_inner(current_hash, crs[:], vec_crs_h_exp[:], C, inner_prod, inner_proof[:],
 #    len_gprod, n, logn)
 
-    inner_prod_info = [vec_crs_h_exp[:], C, inner_prod, len_gprod]
+    inner_prod_info = [vec_crs_h_exp[:], B, C, inner_prod, len_gprod]
 
     return [current_hash, inner_prod_info[:]]
 

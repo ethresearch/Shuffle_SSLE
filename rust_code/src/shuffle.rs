@@ -1,5 +1,3 @@
-
-
 use algebra::{bls12_381::{Fr, G1Affine, G1Projective},
 ProjectiveCurve
 };
@@ -7,6 +5,8 @@ use algebra_core::{AffineCurve, msm::VariableBaseMSM, Zero, One, PrimeField,
 bytes::{ToBytes},to_bytes, fields::Field};
 use rand::{thread_rng,Rng};
 use sha2::{Sha256, Digest};
+
+use std::time::{Instant};
 
 
 // The Common Reference String (CRS) is available to both the prover and verifier and allows the verifier to
@@ -19,8 +19,8 @@ pub struct CrsStruct {
     pub u: G1Affine,
     pub crs_se1: G1Affine,
     pub crs_se2: G1Affine,
-    pub crs_h_prod_ell: G1Projective,
-    pub crs_h_prod_n: G1Projective,
+    pub crs_g_prod_ell: G1Projective,
+    pub crs_g_prod_n: G1Projective,
     pub crs_gh: Vec<G1Affine>,
 }
 
@@ -49,17 +49,18 @@ pub struct GprodProverInfoStruct {
 
 pub struct GprodVerifierInfoStruct {
     pub vec_crs_h_exp: Vec<Fr>,
+    pub g_b: G1Affine,
     pub g_c: G1Projective,
     pub inner_prod: Fr,
 }
 
 pub struct GpmeProofStruct {
-    pub g_rgp: G1Projective,
-    pub g_rme: G1Projective,
+    pub g_rgp: G1Affine,
+    pub g_rme: G1Affine,
     pub blinder_gp: Fr,
-    pub g_mebl1: G1Projective,
-    pub g_mebl2: G1Projective,
-    pub proof: Vec<[G1Affine; 8]>,
+    pub g_mebl1: G1Affine,
+    pub g_mebl2: G1Affine,
+    pub proof: Vec<[G1Affine; 10]>,
     pub b_final: Fr,
     pub c_final: Fr,
     pub exp_final: Fr,
@@ -130,14 +131,14 @@ pub fn setup(n: usize, num_blinders: usize) -> CrsStruct{
     let alpha: Fr = rng.gen();
     let c3: G1Affine = generator.mul(alpha).into_affine();
 
-    let mut c4 = c2[0];
+    let mut c4 = c1[0];
     for i in 1..(n-num_blinders) {
-        c4 += &c2[i];
+        c4 += &c1[i];
     }
 
     let mut c4n = c4;
     for i in 0..num_blinders {
-        c4n += &c2[n - num_blinders + i];
+        c4n += &c1[n - num_blinders + i];
     }
 
     let mut c5: Vec<G1Affine> = Vec::new();
@@ -155,8 +156,8 @@ pub fn setup(n: usize, num_blinders: usize) -> CrsStruct{
         u: c3,
         crs_se1: sameexp1,
         crs_se2: sameexp2,
-        crs_h_prod_ell: c4.into_projective(),
-        crs_h_prod_n: c4n.into_projective(),
+        crs_g_prod_ell: c4.into_projective(),
+        crs_g_prod_n: c4n.into_projective(),
         crs_gh: c5,
     };
 
@@ -193,7 +194,7 @@ ell: usize, n: usize, logn: usize)
     }
 
     let vec_m_formatted = vec_m.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let g_m = VariableBaseMSM::multi_scalar_mul(crs.crs_h.as_slice(), vec_m_formatted.as_slice()).into_affine();
+    let g_m = VariableBaseMSM::multi_scalar_mul(crs.crs_g.as_slice(), vec_m_formatted.as_slice()).into_affine();
 
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(g_m).unwrap());
@@ -214,7 +215,7 @@ ell: usize, n: usize, logn: usize)
     }
 
     let vec_formatted = vec_a_shuffled.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let g_a = VariableBaseMSM::multi_scalar_mul(crs.crs_h.as_slice(), vec_formatted.as_slice()).into_affine();
+    let g_a = VariableBaseMSM::multi_scalar_mul(crs.crs_g.as_slice(), vec_formatted.as_slice()).into_affine();
 
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(g_a).unwrap());
@@ -346,18 +347,18 @@ pub fn gprod_prove(mut current_hash: Vec<u8>, crs: &CrsStruct, gprod: Fr,
         vec_c.push(vec_a[ell + i] * pow_x);
     }
 
-    let mut crs_h_new: Vec<G1Affine> = Vec::new();
+    let mut crs_h: Vec<G1Affine> = Vec::new();
     let mut pow_inv_x = chal_inv_x;
     for i in 0..(ell-1) {
-        crs_h_new.push(crs.crs_h[i+1].mul(pow_inv_x).into_affine());
+        crs_h.push(crs.crs_g[i+1].mul(pow_inv_x).into_affine());
         pow_inv_x = pow_inv_x * chal_inv_x;
     }
 
-    crs_h_new.push(crs.crs_h[0].mul(pow_inv_x).into_affine());
+    crs_h.push(crs.crs_g[0].mul(pow_inv_x).into_affine());
 
     pow_inv_x = pow_inv_x * chal_inv_x;
     for i in 0..num_blinders {
-        crs_h_new.push(crs.crs_h[ell + i].mul(pow_inv_x).into_affine())
+        crs_h.push(crs.crs_g[ell + i].mul(pow_inv_x).into_affine())
     }
 
     let inner_prod = blinder * chal_x.pow([(ell + 1) as u64]) + gprod * chal_x.pow([ell as u64]) - Fr::one();
@@ -368,7 +369,7 @@ pub fn gprod_prove(mut current_hash: Vec<u8>, crs: &CrsStruct, gprod: Fr,
     };
 
     let gprod_prover_info = GprodProverInfoStruct {
-        crs_h_scaled: crs_h_new,
+        crs_h_scaled: crs_h,
         vec_b: vec_b,
         vec_c: vec_c,
         inner_prod: inner_prod,
@@ -431,14 +432,14 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
     }
 
     let vec_formatted = vec_rgp.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let g_rgp = VariableBaseMSM::multi_scalar_mul(crs_h_scaled.as_slice(), vec_formatted.as_slice());
+    let g_rgp = VariableBaseMSM::multi_scalar_mul(crs_h_scaled.as_slice(), vec_formatted.as_slice()).into_affine();
     let blinder_gp = get_inner_prod(&vec_b, &vec_rgp);
 
     let vec_formatted = vec_rme.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let g_rme = VariableBaseMSM::multi_scalar_mul(crs.crs_h.as_slice(), vec_formatted.as_slice());
+    let g_rme = VariableBaseMSM::multi_scalar_mul(crs.crs_g.as_slice(), vec_formatted.as_slice()).into_affine();
 
-    let g_mebl1 = VariableBaseMSM::multi_scalar_mul(ciph_t.as_slice(), vec_formatted.as_slice());
-    let g_mebl2 = VariableBaseMSM::multi_scalar_mul(ciph_u.as_slice(), vec_formatted.as_slice());
+    let g_mebl1 = VariableBaseMSM::multi_scalar_mul(ciph_t.as_slice(), vec_formatted.as_slice()).into_affine();
+    let g_mebl2 = VariableBaseMSM::multi_scalar_mul(ciph_u.as_slice(), vec_formatted.as_slice()).into_affine();
 
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(g_rgp).unwrap());
@@ -464,7 +465,9 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
 
     crs.u = crs.u.mul(chal_x).into_affine();
 
-    let mut proof: Vec<[G1Affine; 8]> = Vec::new();
+    let mut crs_h = crs.crs_g.clone();
+
+    let mut proof: Vec<[G1Affine; 10]> = Vec::new();
     let mut current_n: usize = n;
     for _j in 0..logn {
         current_n = ( (current_n as u32) / 2) as usize;
@@ -488,42 +491,42 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
         let g_zrme2 = VariableBaseMSM::multi_scalar_mul(&ciph_u[..current_n], vec_formatted.as_slice()).into_affine();
 
         let base = &mut crs.crs_g[..current_n].to_vec();
-        base.append(&mut crs_h_scaled[current_n..].to_vec());
+        let vec_formatted = vec_b[current_n..].iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+        let mut g_clgpb = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
+        g_clgpb = g_clgpb + crs.u.mul(zlgp).into_affine();
 
-        let vec_bc = &mut vec_b[current_n..].to_vec();
-        vec_bc.append(&mut vec_c[..current_n].to_vec());
-
-        let vec_formatted = vec_bc.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-        let mut g_clgp = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
-        g_clgp = g_clgp + crs.u.mul(zlgp).into_affine();
+        let base = &mut crs_h_scaled[current_n..].to_vec();
+        let vec_formatted = vec_c[..current_n].iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+        let g_clgpc = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
 
         let base = &mut crs.crs_g[current_n..].to_vec();
-        base.append(&mut crs_h_scaled[..current_n].to_vec());
+        let vec_formatted = vec_b[..current_n].iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+        let mut g_crgpb = VariableBaseMSM::multi_scalar_mul(base.as_slice() , vec_formatted.as_slice()).into_affine();
+        g_crgpb = g_crgpb + crs.u.mul(zrgp).into_affine();
 
-        let vec_bc = &mut vec_b[..current_n].to_vec();
-        vec_bc.append(&mut vec_c[current_n..].to_vec());
+        let base = &mut crs_h_scaled[..current_n].to_vec();
+        let vec_formatted = vec_c[current_n..].iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+        let g_crgpc = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
 
-        let vec_formatted = vec_bc.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-        let mut g_crgp = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
-        g_crgp = g_crgp + crs.u.mul(zrgp).into_affine();
-
-        let base = &mut crs.crs_h[current_n..].to_vec();
+        let base = &mut crs_h[current_n..].to_vec();
         let vec_formatted = vec_exp[..current_n].iter().map(|x| x.into_repr()).collect::<Vec<_>>();
         let g_clme = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
 
-        let base = &mut crs.crs_h[..current_n].to_vec();
+        let base = &mut crs_h[..current_n].to_vec();
         let vec_formatted = vec_exp[current_n..].iter().map(|x| x.into_repr()).collect::<Vec<_>>();
         let g_crme = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
 
-        proof.push([g_zlme1, g_zlme2, g_zrme1, g_zrme2, g_clgp, g_crgp, g_clme, g_crme]);
+        proof.push([g_zlme1, g_zlme2, g_zrme1, g_zrme2, g_clgpb, g_clgpc, g_crgpb, g_crgpc, g_clme, g_crme]);
 
         hash_input = current_hash;
         hash_input.append(&mut to_bytes!(g_zlme1).unwrap());
         hash_input.append(&mut to_bytes!(g_zlme2).unwrap());
         hash_input.append(&mut to_bytes!(g_zrme1).unwrap());
         hash_input.append(&mut to_bytes!(g_zrme2).unwrap());
-        hash_input.append(&mut to_bytes!(g_clgp).unwrap());
-        hash_input.append(&mut to_bytes!(g_crgp).unwrap());
+        hash_input.append(&mut to_bytes!(g_clgpb).unwrap());
+        hash_input.append(&mut to_bytes!(g_clgpc).unwrap());
+        hash_input.append(&mut to_bytes!(g_crgpb).unwrap());
+        hash_input.append(&mut to_bytes!(g_crgpc).unwrap());
         hash_input.append(&mut to_bytes!(g_clme).unwrap());
         hash_input.append(&mut to_bytes!(g_crme).unwrap());
         current_hash = hash_values(hash_input);
@@ -537,7 +540,7 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
             vec_b[i] = vec_b[i] + chal_x * vec_b[current_n + i];
             vec_c[i] = vec_c[i] + chal_inv_x * vec_c[current_n + i];
 
-            crs.crs_h[i] = crs.crs_h[i] + crs.crs_h[current_n + i].mul(chal_x).into_affine();
+            crs_h[i] = crs_h[i] + crs_h[current_n + i].mul(chal_x).into_affine();
             ciph_t[i] = ciph_t[i] + ciph_t[current_n + i].mul(chal_x).into_affine();
             ciph_u[i] = ciph_u[i] + ciph_u[current_n + i].mul(chal_x).into_affine();
 
@@ -549,7 +552,7 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
         vec_b = vec_b[..current_n].to_vec();
         vec_c = vec_c[..current_n].to_vec();
 
-        crs.crs_h = crs.crs_h[..current_n].to_vec();
+        crs_h = crs_h[..current_n].to_vec();
         ciph_t = ciph_t[..current_n].to_vec();
         ciph_u = ciph_u[..current_n].to_vec();
     }
@@ -611,13 +614,16 @@ ell: usize, n: usize, logn: usize)
         field_i += Fr::one();
     }
 
-    let g_a1 = proof_shuffle.g_a + (proof_shuffle.g_m.mul(chal_alpha) + (crs.crs_h_prod_n ).mul(chal_beta)).into_affine();
+    let g_a1 = proof_shuffle.g_a + (proof_shuffle.g_m.mul(chal_alpha) + (crs.crs_g_prod_n ).mul(chal_beta)).into_affine();
 
     let (current_hash, gprod_verifier_info) = gprod_verify(current_hash, &crs, g_a1, gprod, proof_shuffle.proof_gprod, ell, n);
 
+    let now = Instant::now();
     let vec_formatted = vec_a.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
     let g_r = VariableBaseMSM::multi_scalar_mul(ciph_r.as_slice(), vec_formatted.as_slice()).into_affine();
     let g_s = VariableBaseMSM::multi_scalar_mul(ciph_s.as_slice(), vec_formatted.as_slice()).into_affine();
+    let new_now = Instant::now();
+    println!("R and S time = {:?}", new_now.duration_since(now));
 
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(proof_shuffle.g_a).unwrap());
@@ -640,9 +646,13 @@ ell: usize, n: usize, logn: usize)
         ciph_u.push(crs.crs_se2.mul(vec_delta[i]).into_affine());
     }
 
+    let now = Instant::now();
     let (_current_hash, b2) = gprod_and_multiexp_verify(current_hash, crs, gprod_verifier_info.vec_crs_h_exp,
+        gprod_verifier_info.g_b,
     gprod_verifier_info.g_c, gprod_verifier_info.inner_prod, ciph_t, ciph_u, proof_shuffle.g_a.into_projective(),
     proof_shuffle.g_t.into_projective(), proof_shuffle.g_u.into_projective(), proof_shuffle.proof_gpme, ell, n, logn);
+    let new_now = Instant::now();
+    println!("inner product time = {:?}", new_now.duration_since(now));
 
     b1&b2
 }
@@ -665,9 +675,8 @@ pub fn gprod_verify(mut current_hash: Vec<u8>, crs: &CrsStruct, g_a1: G1Affine, 
     let chal_inv_x = chal_x.inverse().unwrap();
 
 
-    let mut g_c = crs.crs_h_prod_ell.mul(-chal_inv_x);
+    let mut g_c = crs.crs_g_prod_ell.mul(-chal_inv_x);
     g_c += &g_a1.into_projective();
-    g_c += &proof_gprod.g_b.into_projective();
 
 
     let mut vec_crs_h_exp: Vec<Fr> = Vec::new();
@@ -691,6 +700,7 @@ pub fn gprod_verify(mut current_hash: Vec<u8>, crs: &CrsStruct, g_a1: G1Affine, 
 
     let gprod_verifier_info = GprodVerifierInfoStruct {
         vec_crs_h_exp: vec_crs_h_exp,
+        g_b: proof_gprod.g_b,
         g_c: g_c,
         inner_prod: inner_prod,
     };
@@ -729,8 +739,9 @@ y_2: G1Affine, proof_sameexp: SameexpProofStruct) -> (Vec<u8>, bool) {
 }
 
 pub fn gprod_and_multiexp_verify(mut current_hash: Vec<u8>, crs: CrsStruct, mut vec_crs_h_exp: Vec<Fr>,
-mut g_c: G1Projective, mut inner_prod: Fr, ciph_t: Vec<G1Affine>, ciph_u: Vec<G1Affine>, mut g_exps: G1Projective,
-mut g_t: G1Projective, mut g_u: G1Projective, proof_gpme: GpmeProofStruct, ell: usize, n: usize, logn: usize
+g_b: G1Affine,
+g_c: G1Projective, mut inner_prod: Fr, ciph_t: Vec<G1Affine>, ciph_u: Vec<G1Affine>, g_exps: G1Projective,
+g_t: G1Projective, g_u: G1Projective, proof_gpme: GpmeProofStruct, ell: usize, n: usize, logn: usize
 ) -> (Vec<u8>, bool) {
 
     let mut hash_input = current_hash;
@@ -744,19 +755,42 @@ mut g_t: G1Projective, mut g_u: G1Projective, proof_gpme: GpmeProofStruct, ell: 
     let chal_x = get_challenge_from_current_hash(&current_hash);
 
     inner_prod += proof_gpme.blinder_gp * chal_x;
-    g_c = g_c + proof_gpme.g_rgp.mul(chal_x);
-    g_t = g_t + proof_gpme.g_mebl1.mul(chal_x);
-    g_u = g_u + proof_gpme.g_mebl2.mul(chal_x);
-    g_exps = g_exps + proof_gpme.g_rme.mul(chal_x);
+
+    let mut exps_g_c: Vec<Fr> = Vec::new();
+    let mut base_g_c: Vec<G1Affine> = Vec::new();
+    exps_g_c.push(-Fr::one()); exps_g_c.push(-chal_x);
+    base_g_c.push(g_c.into_affine()); base_g_c.push(proof_gpme.g_rgp);
+
+    let mut exps_g_t: Vec<Fr> = Vec::new();
+    let mut base_g_t: Vec<G1Affine> = Vec::new();
+    exps_g_t.push(Fr::one()); exps_g_t.push(chal_x);
+    base_g_t.push(g_t.into_affine()); base_g_t.push(proof_gpme.g_mebl1);
+
+    let mut exps_g_u: Vec<Fr> = Vec::new();
+    let mut base_g_u: Vec<G1Affine> = Vec::new();
+    exps_g_u.push(Fr::one()); exps_g_u.push(chal_x);
+    base_g_u.push(g_u.into_affine()); base_g_u.push(proof_gpme.g_mebl2);
+
+    let mut exps_g_exps: Vec<Fr> = Vec::new();
+    let mut base_g_exps: Vec<G1Affine> = Vec::new();
+    exps_g_exps.push(Fr::one()); exps_g_exps.push(chal_x);
+    base_g_exps.push(g_exps.into_affine()); base_g_exps.push(proof_gpme.g_rme);
+    //g_c = g_c + proof_gpme.g_rgp.mul(chal_x);
+    //g_t = g_t + proof_gpme.g_mebl1.mul(chal_x);
+    //g_u = g_u + proof_gpme.g_mebl2.mul(chal_x);
+    //g_exps = g_exps + proof_gpme.g_rme.mul(chal_x);
 
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(inner_prod).unwrap());
     current_hash = hash_values(hash_input);
-    let chal_x = get_challenge_from_current_hash(&current_hash);
+    let u_scale = get_challenge_from_current_hash(&current_hash);
 
-    let u: G1Projective = crs.u.mul(chal_x);
-    g_c = g_c + u.mul(inner_prod);
-
+    // let u: G1Projective = crs.u.mul(chal_x);
+    let mut exps_g_b: Vec<Fr> = Vec::new();
+    let mut base_g_b: Vec<G1Affine> = Vec::new();
+    exps_g_b.push(Fr::one()); exps_g_b.push(u_scale * inner_prod);
+    base_g_b.push(g_b); base_g_b.push(crs.u);
+    //g_b = g_b + crs.u.mul(u_scale * inner_prod);
 
     let mut vec_crs_g_exp: Vec<Fr> = Vec::new();
     let mut vec_crs_h_shifted: Vec<Fr> = Vec::new();
@@ -771,7 +805,7 @@ mut g_t: G1Projective, mut g_u: G1Projective, proof_gpme: GpmeProofStruct, ell: 
         current_n = ( (current_n as u32) / 2) as usize;
 
         let mut hash_input = current_hash;
-        for i in 0..8 {
+        for i in 0..10 {
             hash_input.append(&mut to_bytes!(proof_gpme.proof[j][i]).unwrap())
         }
 
@@ -794,52 +828,112 @@ mut g_t: G1Projective, mut g_u: G1Projective, proof_gpme: GpmeProofStruct, ell: 
         }
 
         //[g_zlme1, g_zlme2, g_zrme1, g_zrme2, g_clgp, g_crgp, g_clme, g_crme]
+        //[g_zlme1, g_zlme2, g_zrme1, g_zrme2, g_clgpb, g_clgpc, g_crgpb, g_crgpc, g_clme, g_crme]
 
-        g_c = proof_gpme.proof[j][4].mul(chal_x) + g_c + proof_gpme.proof[j][5].mul(chal_inv_x);
-        g_t = proof_gpme.proof[j][0].mul(chal_x) + g_t + proof_gpme.proof[j][2].mul(chal_inv_x);
-        g_u = proof_gpme.proof[j][1].mul(chal_x) + g_u + proof_gpme.proof[j][3].mul(chal_inv_x);
-        g_exps = proof_gpme.proof[j][6].mul(chal_x) + g_exps + proof_gpme.proof[j][7].mul(chal_inv_x);
+        //g_b = proof_gpme.proof[j][4].mul(chal_x) + g_b + proof_gpme.proof[j][6].mul(chal_inv_x);
+        exps_g_b.push(chal_x); exps_g_b.push(chal_inv_x);
+        base_g_b.push(proof_gpme.proof[j][4]); base_g_b.push(proof_gpme.proof[j][6]);
+        //g_c = proof_gpme.proof[j][5].mul(chal_x) + g_c + proof_gpme.proof[j][7].mul(chal_inv_x);
+        exps_g_c.push(-chal_x); exps_g_c.push(-chal_inv_x);
+        base_g_c.push(proof_gpme.proof[j][5]); base_g_c.push(proof_gpme.proof[j][7]);
+        //g_t = proof_gpme.proof[j][0].mul(chal_x) + g_t + proof_gpme.proof[j][2].mul(chal_inv_x);
+        exps_g_t.push(chal_x); exps_g_t.push(chal_inv_x);
+        base_g_t.push(proof_gpme.proof[j][0]); base_g_t.push(proof_gpme.proof[j][2]);
+
+        //g_u = proof_gpme.proof[j][1].mul(chal_x) + g_u + proof_gpme.proof[j][3].mul(chal_inv_x);
+        exps_g_u.push(chal_x); exps_g_u.push(chal_inv_x);
+        base_g_u.push(proof_gpme.proof[j][1]); base_g_u.push(proof_gpme.proof[j][3]);
+
+        //g_exps = proof_gpme.proof[j][8].mul(chal_x) + g_exps + proof_gpme.proof[j][9].mul(chal_inv_x);
+        exps_g_exps.push(chal_x); exps_g_exps.push(chal_inv_x);
+        base_g_exps.push(proof_gpme.proof[j][8]); base_g_exps.push(proof_gpme.proof[j][9]);
     }
-
-    let vec_formatted = vec_crs_h_shifted.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let g_ciph_t_final: G1Projective = VariableBaseMSM::multi_scalar_mul(ciph_t.as_slice(), vec_formatted.as_slice());
-    let g_ciph_u_final: G1Projective = VariableBaseMSM::multi_scalar_mul(ciph_u.as_slice(), vec_formatted.as_slice());
-
-
-    let b1 = (g_ciph_t_final.mul(- proof_gpme.exp_final) + g_t).into_affine().infinity;
-    let b2 = (g_ciph_u_final.mul(- proof_gpme.exp_final) + g_u).into_affine().infinity;
-
 
     let hash_input = &mut to_bytes!(proof_gpme.b_final).unwrap() ;
     hash_input.append(&mut to_bytes!(proof_gpme.c_final).unwrap());
     hash_input.append(&mut to_bytes!(proof_gpme.exp_final).unwrap());
 
     let chal_x = get_challenge_from_current_hash(&hash_input.to_vec());
+    let hash_input = &mut to_bytes!(chal_x).unwrap() ;
+    let chal_y = get_challenge_from_current_hash(&hash_input.to_vec());
+    let hash_input = &mut to_bytes!(chal_y).unwrap() ;
+    let chal_z = get_challenge_from_current_hash(&hash_input.to_vec());
 
-    vec_crs_h_exp[0] = chal_x * vec_crs_h_shifted[0] * proof_gpme.exp_final
+//    let vec_formatted = exps_g_c.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+//    g_c = VariableBaseMSM::multi_scalar_mul(base_g_c.as_slice(), vec_formatted.as_slice());
+    let mut base = ciph_t;
+    let mut exps: Vec<Fr> = Vec::new();
+    for i in 0..n {
+        exps.push(- chal_z * vec_crs_h_shifted[i] * proof_gpme.exp_final);
+    }
+    base.append(&mut base_g_t );
+    for i in 0..exps_g_t.len() {
+        exps.push(exps_g_t[i] * chal_z)
+    }
+
+    base.append(&mut ciph_u.clone());
+    for i in 0..n {
+        exps.push(-chal_z * vec_crs_h_shifted[i] * proof_gpme.exp_final);
+    }
+
+    base.append(&mut base_g_u);
+    for i in 0..exps_g_u.len() {
+        exps.push(exps_g_u[i] * chal_z)
+    }
+
+//    let vec_formatted = vec_crs_h_shifted.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+//    let g_ciph_t_final: G1Projective = VariableBaseMSM::multi_scalar_mul(ciph_t.as_slice(), vec_formatted.as_slice());
+//    let g_ciph_u_final: G1Projective = VariableBaseMSM::multi_scalar_mul(ciph_u.as_slice(), vec_formatted.as_slice());
+
+//    let b1 = (g_ciph_t_final.mul(- proof_gpme.exp_final) + g_t).into_affine().infinity;
+//    let b2 = (g_ciph_u_final.mul(- proof_gpme.exp_final) + g_u).into_affine().infinity;
+
+    vec_crs_h_exp[0] = chal_y * vec_crs_g_exp[0] +
+    chal_x * vec_crs_h_shifted[0] * proof_gpme.exp_final
     + vec_crs_h_exp[0] * vec_crs_h_shifted[ell-1]*proof_gpme.c_final;
 
     for i in 1..ell {
-        vec_crs_h_exp[i] = chal_x * vec_crs_h_shifted[i] * proof_gpme.exp_final
+        vec_crs_h_exp[i] = chal_y * vec_crs_g_exp[i] +
+        chal_x * vec_crs_h_shifted[i] * proof_gpme.exp_final
         + vec_crs_h_exp[i] * vec_crs_h_shifted[i-1]*proof_gpme.c_final;
     }
 
     for i in ell..n {
-        vec_crs_h_exp[i] = chal_x * vec_crs_h_shifted[i] * proof_gpme.exp_final
+        vec_crs_h_exp[i] = chal_y * vec_crs_g_exp[i] +
+        chal_x * vec_crs_h_shifted[i] * proof_gpme.exp_final
         + vec_crs_h_exp[i] * vec_crs_h_shifted[i]*proof_gpme.c_final;
     }
 
+    let now = Instant::now();
+    exps.append(&mut vec_crs_h_exp); //scale crs_g
+    //exps.push(-chal_y); //scale g_b
+    for i in 0..exps_g_b.len() {
+        exps.push(- chal_y * exps_g_b[i]);
+    }
+    exps.push(u_scale * chal_y * proof_gpme.b_final * proof_gpme.c_final); // scale u
+//    vec_crs_h_exp.push(-Fr::one());
+    exps.append(&mut exps_g_c); // scale g_c
+    for i in 0..exps_g_exps.len() {
+        exps.push(- chal_x * exps_g_exps[i]);
+    }
+    //exps.push(-chal_x); // scale g_exps
 
-    vec_crs_g_exp.append(&mut vec_crs_h_exp);
+    let vec_formatted = exps.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
 
-    let vec_formatted = vec_crs_g_exp.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let mut g_expected: G1Projective = VariableBaseMSM::multi_scalar_mul(crs.crs_gh.as_slice(), vec_formatted.as_slice());
+    base.append(&mut crs.crs_g.clone());
+    //base.push(g_b.into_affine());
+    base.append(&mut base_g_b);
+    base.push(crs.u);
+    //base.push(g_c.into_affine());
+    base.append(&mut base_g_c);
+    //base.push(g_exps.into_affine());
+    base.append(&mut base_g_exps);
 
 
-    g_expected = g_expected + u.mul(proof_gpme.b_final * proof_gpme.c_final);
+    let g_expected: G1Affine = VariableBaseMSM::multi_scalar_mul(base.as_slice(), vec_formatted.as_slice()).into_affine();
+    let b3 = g_expected.infinity;
+    let new_now = Instant::now();
+    println!("g_expected time = {:?}", new_now.duration_since(now));
 
-    g_expected = g_expected + g_c.mul(-Fr::one()) + g_exps.mul(-chal_x);
-    let b3 = g_expected.into_affine().infinity;
-
-    (current_hash, b1&b2&b3)
+    (current_hash, b3)
 }

@@ -4,9 +4,12 @@ from secrets import randbelow
 from fiat_shamir import hash_integers
 from utils import compute_multiexp, compute_innerprod, inverse, curve_order, int_to_binaryintarray
 
+from timeit import default_timer as timer
+
 def prove_multiexp_and_gprod_inner(current_hash, crs, vec_b, vec_c,inner_prod,
-ciphertexts_1, ciphertexts_2, vec_exp, n, logn):
-    [crs_g, crs_h, crs_h_scaled, u] = crs[:]
+  ciphertexts_1, ciphertexts_2, vec_exp, n, logn):
+    [crs_g, crs_h_scaled, u] = crs[:]
+    crs_h = crs_g[:]
 
     proof = []
 
@@ -49,17 +52,21 @@ ciphertexts_1, ciphertexts_2, vec_exp, n, logn):
         zLme = [compute_multiexp(ciphertexts_1[n:], vec_exp[:n]), compute_multiexp(ciphertexts_2[n:], vec_exp[:n])]
         zRme = [compute_multiexp(ciphertexts_1[:n], vec_exp[n:]), compute_multiexp(ciphertexts_2[:n], vec_exp[n:])]
 
-        CLgp = add(compute_multiexp(crs_g[:n], vec_b[n:]), compute_multiexp(crs_h_scaled[n:],vec_c[:n]))
-        CLgp = add(CLgp, multiply(u, zLgp))
-        CRgp = add(compute_multiexp(crs_g[n:], vec_b[:n]), compute_multiexp(crs_h_scaled[:n],vec_c[n:]))
-        CRgp = add(CRgp, multiply(u, zRgp))
+        CLgp_b = add( compute_multiexp(crs_g[:n], vec_b[n:]), multiply(u, zLgp))
+        CLgp_c = compute_multiexp(crs_h_scaled[n:],vec_c[:n])
+
+        CRgp_b = add(compute_multiexp(crs_g[n:], vec_b[:n]), multiply(u, zRgp))
+        CRgp_c = compute_multiexp(crs_h_scaled[:n],vec_c[n:])
         CLme = compute_multiexp(crs_h[n:], vec_exp[:n])
         CRme = compute_multiexp(crs_h[:n], vec_exp[n:])
 
-        proof.append([CLgp, CRgp, zLme, zRme, CLme, CRme])
+        proof.append([CLgp_b, CLgp_c, CRgp_b, CRgp_c, zLme, zRme, CLme, CRme])
 
-        current_hash = hash_integers([current_hash,int(CLgp[0]),int(CLgp[1]), int(CLgp[2]),
-        int(CRgp[0]), int(CRgp[1]), int(CRgp[2]), int(zLme[0][0]), int(zLme[0][1]), int(zLme[0][2]),
+        current_hash = hash_integers([current_hash,int(CLgp_b[0]),int(CLgp_b[1]), int(CLgp_b[2]),
+        int(CLgp_c[0]),int(CLgp_c[1]), int(CLgp_c[2]),
+        int(CRgp_b[0]), int(CRgp_b[1]), int(CRgp_b[2]),
+        int(CRgp_c[0]), int(CRgp_c[1]), int(CRgp_c[2]),
+        int(zLme[0][0]), int(zLme[0][1]), int(zLme[0][2]),
         int(zRme[0][0]), int(zRme[0][1]), int(zRme[0][2]), int(CLme[0]),int(CLme[1]), int(CLme[2]),
         int(CRme[0]), int(CRme[1]), int(CRme[2])])
 
@@ -91,9 +98,9 @@ ciphertexts_1, ciphertexts_2, vec_exp, n, logn):
 
     return [current_hash, [zkinfo[:], proof[:], final_values[:]]]
 
-def verify_multiexp_and_gprod_inner(current_hash, crs, vec_crs_h_exp, len_gprod, C, inner_prod,
+def verify_multiexp_and_gprod_inner(current_hash, crs, vec_crs_h_exp, len_gprod, B, C, inner_prod,
   ciphertexts_1, ciphertexts_2, commit_exps, multiexp_1, multiexp_2, inner_proof,n, logn):
-    [crs_g, crs_h, u] = crs[:]
+    [crs_g, u, crs_se1, crs_se2] = crs[:]
 
     ### Adding in zero knowledge
     [zkinfo, proof, final_values] = inner_proof[:]
@@ -115,7 +122,7 @@ def verify_multiexp_and_gprod_inner(current_hash, crs, vec_crs_h_exp, len_gprod,
     x = current_hash % curve_order;
 
     u = multiply(u, x)
-    C = add(C, multiply(u,inner_prod))
+    B = add(B, multiply(u,inner_prod))
 
     [final_b, final_c, final_exp] = final_values[:]
     vec_crs_g_exp = [final_b] * n;
@@ -125,10 +132,13 @@ def verify_multiexp_and_gprod_inner(current_hash, crs, vec_crs_h_exp, len_gprod,
     for j in range(logn):
         n_var = n_var // 2
 
-        [CLgp, CRgp, zLme, zRme, CLme, CRme] = proof[j]
+        [CLgp_b, CLgp_c, CRgp_b, CRgp_c, zLme, zRme, CLme, CRme] = proof[j]
 
-        current_hash = hash_integers([current_hash,int(CLgp[0]),int(CLgp[1]), int(CLgp[2]),
-        int(CRgp[0]), int(CRgp[1]), int(CRgp[2]), int(zLme[0][0]), int(zLme[0][1]), int(zLme[0][2]),
+        current_hash = hash_integers([current_hash,int(CLgp_b[0]),int(CLgp_b[1]), int(CLgp_b[2]),
+        int(CLgp_c[0]),int(CLgp_c[1]), int(CLgp_c[2]),
+        int(CRgp_b[0]), int(CRgp_b[1]), int(CRgp_b[2]),
+        int(CRgp_c[0]), int(CRgp_c[1]), int(CRgp_c[2]),
+        int(zLme[0][0]), int(zLme[0][1]), int(zLme[0][2]),
         int(zRme[0][0]), int(zRme[0][1]), int(zRme[0][2]), int(CLme[0]),int(CLme[1]), int(CLme[2]),
         int(CRme[0]), int(CRme[1]), int(CRme[2])])
 
@@ -140,7 +150,8 @@ def verify_multiexp_and_gprod_inner(current_hash, crs, vec_crs_h_exp, len_gprod,
                 vec_crs_g_exp[i] = (vec_crs_g_exp[i] * inv_x) % curve_order
                 vec_crs_h_shifted[i] = (vec_crs_h_shifted[i] * x) % curve_order
 
-        C = add(add(multiply(CRgp, inv_x), C), multiply(CLgp, x))
+        B = add(add(multiply(CRgp_b, inv_x), B), multiply(CLgp_b, x))
+        C = add(add(multiply(CRgp_c, inv_x), C), multiply(CLgp_c, x))
         multiexp_1 = add(add( multiply(zLme[0],x), multiexp_1 ), multiply(zRme[0], inv_x) )
         multiexp_2 = add(add( multiply(zLme[1],x), multiexp_2 ), multiply(zRme[1], inv_x) )
 
@@ -160,26 +171,24 @@ def verify_multiexp_and_gprod_inner(current_hash, crs, vec_crs_h_exp, len_gprod,
     current_hash = hash_integers([current_hash, final_b, final_c, final_exp])
     x = current_hash % curve_order
 
-    vec_crs_h_exp[0] = ( x * vec_crs_h_shifted[0] * final_exp +
+    vec_crs_h_exp[0] = ( x**2 * vec_crs_g_exp[0] +
+    x * vec_crs_h_shifted[0] * final_exp +
     vec_crs_h_exp[0] * vec_crs_h_shifted[len_gprod - 1] * final_c) % curve_order
     for i in range(1,len_gprod):
-        vec_crs_h_exp[i] = (x * vec_crs_h_shifted[i] * final_exp +
+        vec_crs_h_exp[i] = (x**2 * vec_crs_g_exp[i] + x * vec_crs_h_shifted[i] * final_exp +
         vec_crs_h_exp[i] * vec_crs_h_shifted[i-1] * final_c) % curve_order
 
     for i in range(len_gprod,n):
-        vec_crs_h_exp[i] = (x * vec_crs_h_shifted[i] * final_exp
+        vec_crs_h_exp[i] = (x**2 * vec_crs_g_exp[i] + x * vec_crs_h_shifted[i] * final_exp
         + vec_crs_h_exp[i] * vec_crs_h_shifted[i] * final_c) % curve_order
 
     inner_prod = final_b * final_c % curve_order
-#    final_g = compute_multiexp(crs_g[:], vec_crs_g_exp[:])
-#    final_h = compute_multiexp(crs_h[:], vec_crs_h_exp[:])
 
-    expected_outcome = compute_multiexp(crs_g[:], vec_crs_g_exp[:])
-    expected_outcome = add(expected_outcome, compute_multiexp(crs_h[:], vec_crs_h_exp[:]))
-    expected_outcome = add(expected_outcome, multiply(u, inner_prod))
-
-    expected_outcome = add(expected_outcome, multiply(C, curve_order - 1))
+    expected_outcome = compute_multiexp(crs_g[:], vec_crs_h_exp[:])
+    expected_outcome = add(expected_outcome, multiply(u, (inner_prod * x**2 ) % curve_order))
     expected_outcome = add(expected_outcome, multiply(commit_exps, curve_order - x))
+    expected_outcome = add(expected_outcome, multiply(C, curve_order - 1))
+    expected_outcome = add(expected_outcome, multiply(B, (- x**2 ) % curve_order ) )
 
     if expected_outcome != Z1:
         print("ERROR: final exponent is incorrect")
