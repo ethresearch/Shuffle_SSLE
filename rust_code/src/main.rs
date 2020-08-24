@@ -80,7 +80,7 @@ fn main() {
 
     let now = Instant::now();
     let crs_cp = crs.clone();
-    let b = verify(crs_cp, &ciph_r, &ciph_s, ciph_t, ciph_u, proof_shuffle, ell, n, logn);
+    let b = verify(crs_cp, ciph_r, ciph_s, ciph_t, ciph_u, proof_shuffle, ell, n, logn);
     let new_now = Instant::now();
     println!("Verification passes = {:?}", b);
     println!("verifying time = {:?}", new_now.duration_since(now));
