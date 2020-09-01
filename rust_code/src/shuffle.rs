@@ -593,6 +593,7 @@ ell: usize, n: usize, logn: usize)
 
     let num_blinders = n - ell;
 
+    let now = Instant::now();
     let mut hash_input = to_bytes!(crs.u).unwrap();
     for i in 0..ell {
         hash_input.append(&mut to_bytes!(ciph_r[i]).unwrap());
@@ -601,6 +602,8 @@ ell: usize, n: usize, logn: usize)
         hash_input.append(&mut to_bytes!(ciph_u[i]).unwrap());
     }
     let mut current_hash = hash_values(hash_input);
+    let new_now = Instant::now();
+    println!("hashing time = {:?}", new_now.duration_since(now));    
 
 
     let mut hash_input = current_hash;
@@ -823,7 +826,17 @@ ell: usize, n: usize, logn: usize
 
 
     // challenges = [zk, u_scale, inner[0], ... , inner[logn - 1], veq1, veq2, veq3, veq4 ]
+    let now = Instant::now();
     let challenges = get_challenges_gpme_verify(current_hash.clone(), &proof_gpme, logn);
+    let new_now = Instant::now();
+    println!("getting challenges time = {:?}", new_now.duration_since(now));
+
+    // inverse challenges
+    let now = Instant::now();
+    let mut x_invs: Vec<Fr> = challenges[2..(logn+2)].to_vec();
+    algebra_core::batch_inversion(&mut x_invs);
+    let new_now = Instant::now();
+    println!("inversion time = {:?}", new_now.duration_since(now));
 
     final_exps = add_to_final_expo(final_exps, g_r, - Fr::one());
     final_exps = add_to_final_expo(final_exps, g_s, - challenges[logn + 7]);
@@ -870,7 +883,7 @@ ell: usize, n: usize, logn: usize
 
 
         let chal_x = challenges[2 + j];
-        let chal_inv_x = challenges[2 + j].inverse().unwrap();
+        let chal_inv_x = x_invs[j];
 
         for i in 0..n {
             let bitstring = format!("{:b}", i);
