@@ -8,6 +8,8 @@ use algebra_core::{AffineCurve, curves::ProjectiveCurve};
 use rand::{thread_rng,Rng};
 use std::time::{Instant};
 
+
+
 fn get_shuffle(ciph_r: &Vec<G1Affine>, ciph_s: &Vec<G1Affine>, ell: usize) ->
     (Vec<G1Affine>, Vec<G1Affine>, Vec<u32>, Fr)
  {
@@ -45,10 +47,11 @@ fn main() {
     if (2 as u32).pow(logn as u32) != n as u32 {
         println!("Error, logn must equal log_2(n), should panic");
     }
+
     let mut rng = thread_rng();
 
     let now = Instant::now();
-    let crs = setup(n, n - ell);
+    let crs = setup(n, logn, n - ell);
     let new_now = Instant::now();
     println!("crs time = {:?}", new_now.duration_since(now));
 

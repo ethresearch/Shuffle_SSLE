@@ -4,8 +4,8 @@ ProjectiveCurve
 use algebra_core::{AffineCurve, msm::VariableBaseMSM, Zero, One, PrimeField,
 bytes::{ToBytes},to_bytes, fields::Field};
 use rand::{thread_rng,Rng};
-use sha2::{Sha256, Digest};
-
+//use sha2::{Sha256, Digest};
+use blake2::{Blake2b, Digest};
 use std::time::{Instant};
 
 
@@ -22,6 +22,7 @@ pub struct CrsStruct {
     pub crs_g_prod_ell: G1Projective,
     pub crs_g_prod_n: G1Projective,
     pub crs_gh: Vec<G1Affine>,
+    pub bitstring: Vec<Vec<usize>>
 }
 
 pub struct ShuffleProofStruct {
@@ -83,7 +84,8 @@ pub struct FinalExpStruct {
 }
 
 pub fn hash_values(hash_input: Vec<u8>) -> Vec<u8> {
-    let mut hasher = Sha256::new();
+    //let mut hasher = Sha256::new();
+    let mut hasher = Blake2b::new();
     hasher.update(hash_input);
     let current_hash = hasher.finalize();
     current_hash.to_vec()
@@ -91,22 +93,16 @@ pub fn hash_values(hash_input: Vec<u8>) -> Vec<u8> {
 
 pub fn get_challenge_from_current_hash(current_hash: &Vec<u8>) -> Fr {
 
-    //The from_random_bytes function from zexe requires a 256 byte! array as input.
-    //Filling extra data with zeros
-    let mut current_hash_cp: Vec<u8> = current_hash.to_vec();
-
     //Sometimes x is None.  Hash again if this happens.
-    let y = loop {
-        let mut m = [0u8; 256];
-        for i in 0..32 {
-            m[i] = current_hash_cp[i];
-        }
-        let x = Fr::from_random_bytes(&m);
-        if x != None {
-            break x;
-        }
-        current_hash_cp = hash_values(current_hash_cp);
-    };
+//    let y = loop {
+//        let x = Fr::from_random_bytes(&current_hash);
+//        if x != None {
+//            break x;
+//        }
+//        current_hash = hash_values(current_hash);
+//    };
+
+    let y = Fr::from_random_bytes(&current_hash[..31]);
 
     let z = y.unwrap();
     z
@@ -127,7 +123,7 @@ pub fn add_to_final_expo(mut final_exps: FinalExpStruct, base_input: G1Affine, e
 }
 
 /// Totally insecure setup function.  Need to directly hash to curve to make secure.
-pub fn setup(n: usize, num_blinders: usize) -> CrsStruct{
+pub fn setup(n: usize, logn: usize, num_blinders: usize) -> CrsStruct{
     let mut rng = thread_rng();
 
     let generator = G1Affine::prime_subgroup_generator();
@@ -173,9 +169,35 @@ pub fn setup(n: usize, num_blinders: usize) -> CrsStruct{
         crs_g_prod_ell: c4.into_projective(),
         crs_g_prod_n: c4n.into_projective(),
         crs_gh: c5,
+        bitstring: get_bitstring(n, logn),
     };
 
     crs
+}
+
+pub fn get_bitstring(n:usize, logn: usize) -> Vec<Vec<usize>> {
+    let mut bitstring: Vec<Vec<usize>> = Vec::new();
+    for _i in 0..n {
+        let vec_i: Vec<usize> = Vec::new();
+        bitstring.push(vec_i);
+    }
+
+    for j in 0..logn {
+        for i in 0..n {
+            let current_bitstring = format!("{:b}", i);
+            let mut bit_vec: Vec<char> = current_bitstring.chars().collect();
+            bit_vec.reverse();
+            while bit_vec.len() < logn {
+                bit_vec.push('0');
+            }
+
+            if bit_vec[logn - j - 1] == '1' {
+                bitstring[i].push(j);
+            }
+        }
+    }
+
+    bitstring
 }
 
 pub fn prove(crs: CrsStruct, ciph_r: &Vec<G1Affine>, ciph_s: &Vec<G1Affine>,
@@ -587,7 +609,7 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
 }
 
 pub fn verify(crs: CrsStruct, ciph_r: Vec<G1Affine>, ciph_s: Vec<G1Affine>,
-mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, proof_shuffle: ShuffleProofStruct,
+ciph_t: Vec<G1Affine>, ciph_u: Vec<G1Affine>, proof_shuffle: ShuffleProofStruct,
 ell: usize, n: usize, logn: usize)
 -> bool {
 
@@ -603,7 +625,7 @@ ell: usize, n: usize, logn: usize)
     }
     let mut current_hash = hash_values(hash_input);
     let new_now = Instant::now();
-    println!("hashing time = {:?}", new_now.duration_since(now));    
+    println!("hashing time = {:?}", new_now.duration_since(now));
 
 
     let mut hash_input = current_hash;
@@ -631,7 +653,10 @@ ell: usize, n: usize, logn: usize)
         field_i += Fr::one();
     }
 
+    let now = Instant::now();
     let g_a1 = proof_shuffle.g_a + (proof_shuffle.g_m.mul(chal_alpha) + (crs.crs_g_prod_n ).mul(chal_beta)).into_affine();
+    let new_now = Instant::now();
+    println!("g_a1 outer time = {:?}", new_now.duration_since(now));
 
     let now = Instant::now();
     let (current_hash, gprod_verifier_info) = gprod_verify(current_hash, &crs, g_a1, gprod, proof_shuffle.proof_gprod, ell, n);
@@ -654,31 +679,51 @@ ell: usize, n: usize, logn: usize)
         vec_delta.push( get_challenge_from_current_hash(&current_hash) );
     }
 
+    // challenges = [zk, u_scale, inner[0], ... , inner[logn - 1], veq1, veq2, veq3, veq4, veq5, veq6 ]
+    let (chal_sameexp, challenges_gpme, challenges_veqs) = get_challenges(current_hash.clone(),
+     proof_shuffle.g_r,  proof_shuffle.g_s, proof_shuffle.g_t, proof_shuffle.g_u, &proof_shuffle.proof_sameexp,
+     &proof_shuffle.proof_gpme, logn);
+
+     let mut final_exps: FinalExpStruct = FinalExpStruct {
+             base: Vec::new(),
+             exponents: Vec::new(),
+     };
+
+
     let now = Instant::now();
-    let (current_hash, b1) = sameexp_verify(current_hash, proof_shuffle.g_r, proof_shuffle.g_s, crs.crs_se1,
+    final_exps = sameexp_verify(chal_sameexp, challenges_veqs[6..8].to_vec(), final_exps, proof_shuffle.g_r, proof_shuffle.g_s, crs.crs_se1,
         crs.crs_se2, proof_shuffle.g_t, proof_shuffle.g_u, proof_shuffle.proof_sameexp);
     let new_now = Instant::now();
     println!("sameexp time = {:?}", new_now.duration_since(now));
 
-    let now = Instant::now();
-    for i in 0..num_blinders {
-        ciph_t.push(crs.crs_se1.mul(vec_gamma[i]).into_affine());
-        ciph_u.push(crs.crs_se2.mul(vec_delta[i]).into_affine());
+
+    // check that g_r and g_s are correct.
+    final_exps = add_to_final_expo(final_exps, proof_shuffle.g_r, - Fr::one());
+    final_exps = add_to_final_expo(final_exps, proof_shuffle.g_s, - challenges_veqs[5]);
+
+    for i in 0..vec_a.len() {
+        final_exps = add_to_final_expo(final_exps, ciph_r[i], vec_a[i]);
+        final_exps = add_to_final_expo(final_exps, ciph_s[i], challenges_veqs[5] * vec_a[i]);
     }
-    let new_now = Instant::now();
-    println!("extra ciph time = {:?}", new_now.duration_since(now));
 
     let now = Instant::now();
-    let (_current_hash, b2) = gprod_and_multiexp_verify(current_hash, crs, gprod_verifier_info.vec_crs_h_exp,
+    let final_exps = gprod_and_multiexp_verify(crs, challenges_gpme, challenges_veqs, final_exps,
+        gprod_verifier_info.vec_crs_h_exp,
         gprod_verifier_info.g_b,
-    gprod_verifier_info.g_c, gprod_verifier_info.inner_prod, ciph_t, ciph_u, proof_shuffle.g_a,
+    gprod_verifier_info.g_c, gprod_verifier_info.inner_prod, ciph_t, vec_gamma, ciph_u, vec_delta, proof_shuffle.g_a,
     proof_shuffle.g_t, proof_shuffle.g_u, proof_shuffle.proof_gpme,
-    ciph_r, ciph_s, proof_shuffle.g_r, proof_shuffle.g_s, vec_a,
     ell, n, logn);
     let new_now = Instant::now();
     println!("inner product time = {:?}", new_now.duration_since(now));
 
-    b1&b2
+    let now = Instant::now();
+    let vec_formatted = final_exps.exponents.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+    let g_expected: G1Affine = VariableBaseMSM::multi_scalar_mul(final_exps.base.as_slice(), vec_formatted.as_slice()).into_affine();
+    let b = g_expected.infinity;
+    let new_now = Instant::now();
+    println!("final exponentiation time = {:?}", new_now.duration_since(now));
+
+    b
 }
 
 pub fn gprod_verify(mut current_hash: Vec<u8>, crs: &CrsStruct, g_a1: G1Affine, gprod: Fr,
@@ -733,39 +778,54 @@ pub fn gprod_verify(mut current_hash: Vec<u8>, crs: &CrsStruct, g_a1: G1Affine, 
 
     }
 
+pub fn sameexp_verify(chal_x: Fr, challenges_veqs: Vec<Fr>, mut final_exps: FinalExpStruct, g_1: G1Affine, g_2: G1Affine,
+    h_1: G1Affine, h_2: G1Affine, y_1: G1Affine, y_2: G1Affine, proof_sameexp: SameexpProofStruct)
+    -> FinalExpStruct
+    {
+//    let g_expected: G1Affine = proof_sameexp.g_r1 + (y_1.mul(chal_x)
+//    + g_1.mul(- proof_sameexp.u1) + h_1.mul(- proof_sameexp.u2)).into_affine();
+//    let b1 = g_expected.infinity;
 
-pub fn sameexp_verify(mut current_hash: Vec<u8>, g_1: G1Affine, g_2: G1Affine,
-    h_1: G1Affine, h_2: G1Affine, y_1: G1Affine,
-y_2: G1Affine, proof_sameexp: SameexpProofStruct) -> (Vec<u8>, bool) {
+    final_exps = add_to_final_expo(final_exps, proof_sameexp.g_r1, challenges_veqs[0]);
+    final_exps = add_to_final_expo(final_exps, y_1, challenges_veqs[0] * chal_x);
+    final_exps = add_to_final_expo(final_exps, g_1, - challenges_veqs[0] * proof_sameexp.u1);
+    final_exps = add_to_final_expo(final_exps, h_1, - challenges_veqs[0] * proof_sameexp.u2);
+
+//    let g_expected: G1Affine = proof_sameexp.g_r2 + (y_2.mul(chal_x)
+//    + g_2.mul(- proof_sameexp.u1) + h_2.mul(- proof_sameexp.u3)).into_affine();
+//    let b2 = g_expected.infinity;
+
+    final_exps = add_to_final_expo(final_exps, proof_sameexp.g_r2, challenges_veqs[1]);
+    final_exps = add_to_final_expo(final_exps, y_2, challenges_veqs[1] * chal_x);
+    final_exps = add_to_final_expo(final_exps, g_2, - challenges_veqs[1] * proof_sameexp.u1);
+    final_exps = add_to_final_expo(final_exps, h_2, - challenges_veqs[1] * proof_sameexp.u3);
+
+//    let b: bool = b1 & b2;
+
+//    b
+    final_exps
+}
+
+pub fn get_challenges(mut current_hash: Vec<u8>,
+    g_r: G1Affine, g_s: G1Affine, g_t: G1Affine, g_u: G1Affine, proof_sameexp: &SameexpProofStruct,
+    proof_gpme: &GpmeProofStruct, logn: usize)
+-> (Fr, Vec<Fr>, Vec<Fr>) {
+
     let mut hash_input = current_hash;
-    hash_input.append(&mut to_bytes!(g_1).unwrap());
-    hash_input.append(&mut to_bytes!(g_2).unwrap());
-    hash_input.append(&mut to_bytes!(y_1).unwrap());
-    hash_input.append(&mut to_bytes!(y_2).unwrap());
+    hash_input.append(&mut to_bytes!(g_r).unwrap());
+    hash_input.append(&mut to_bytes!(g_s).unwrap());
+    hash_input.append(&mut to_bytes!(g_t).unwrap());
+    hash_input.append(&mut to_bytes!(g_u).unwrap());
     hash_input.append(&mut to_bytes!(proof_sameexp.g_r1).unwrap());
     hash_input.append(&mut to_bytes!(proof_sameexp.g_r2).unwrap());
 
     current_hash = hash_values(hash_input);
-    let chal_x = get_challenge_from_current_hash(&current_hash);
+    let chal_sameexp = get_challenge_from_current_hash(&current_hash);
 
-    let g_expected: G1Affine = proof_sameexp.g_r1 + (y_1.mul(chal_x)
-    + g_1.mul(- proof_sameexp.u1) + h_1.mul(- proof_sameexp.u2)).into_affine();
-    let b1 = g_expected.infinity;
+    let mut challenges_gpme: Vec<Fr> = Vec::new();
 
-    let g_expected: G1Affine = proof_sameexp.g_r2 + (y_2.mul(chal_x)
-    + g_2.mul(- proof_sameexp.u1) + h_2.mul(- proof_sameexp.u3)).into_affine();
-    let b2 = g_expected.infinity;
-
-    let b: bool = b1 & b2;
-
-    (current_hash, b)
-
-}
-
-pub fn get_challenges_gpme_verify(mut current_hash: Vec<u8>, proof_gpme: &GpmeProofStruct, logn: usize)
--> Vec<Fr> {
-    let mut challenges: Vec<Fr> = Vec::new();
-
+    // One challenge for zero-knowledge gpme.
+    // [zk]
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(proof_gpme.g_rgp).unwrap());
     hash_input.append(&mut to_bytes!(proof_gpme.blinder_gp).unwrap());
@@ -774,13 +834,17 @@ pub fn get_challenges_gpme_verify(mut current_hash: Vec<u8>, proof_gpme: &GpmePr
     hash_input.append(&mut to_bytes!(proof_gpme.g_mebl2).unwrap());
 
     current_hash = hash_values(hash_input);
-    challenges.push( get_challenge_from_current_hash(&current_hash) );
+    challenges_gpme.push( get_challenge_from_current_hash(&current_hash) );
     // let chal_zk = get_challenge_from_current_hash(&current_hash);
 
+    // One challenge for scaling u in gpme.
+    // [u_scale]
     let hash_input = current_hash;
     current_hash = hash_values(hash_input);
-    challenges.push( get_challenge_from_current_hash(&current_hash) );
+    challenges_gpme.push( get_challenge_from_current_hash(&current_hash) );
 
+    // One challenge per inner product round in gpme.
+    // [inner[0], ... , inner[logn - 1]]
     for j in 0..logn {
         let mut hash_input = current_hash;
         for i in 0..10 {
@@ -788,86 +852,63 @@ pub fn get_challenges_gpme_verify(mut current_hash: Vec<u8>, proof_gpme: &GpmePr
         }
 
         current_hash = hash_values(hash_input);
-        challenges.push( get_challenge_from_current_hash(&current_hash) )
+        challenges_gpme.push( get_challenge_from_current_hash(&current_hash) )
     }
 
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(proof_gpme.b_final).unwrap()) ;
     hash_input.append(&mut to_bytes!(proof_gpme.c_final).unwrap());
     hash_input.append(&mut to_bytes!(proof_gpme.a_final).unwrap());
-    current_hash = hash_values(hash_input);
+    current_hash = hash_values(hash_input).to_vec();
 
-    challenges.push(get_challenge_from_current_hash(&current_hash.to_vec()));
-    current_hash = hash_values(current_hash);
-    challenges.push(get_challenge_from_current_hash(&current_hash.to_vec()));
-    current_hash = hash_values(current_hash);
-    challenges.push(get_challenge_from_current_hash(&current_hash.to_vec()));
-    current_hash = hash_values(current_hash);
-    challenges.push(get_challenge_from_current_hash(&current_hash.to_vec()));
-    current_hash = hash_values(current_hash);
-    challenges.push(get_challenge_from_current_hash(&current_hash.to_vec()));
-    current_hash = hash_values(current_hash);
-    challenges.push(get_challenge_from_current_hash(&current_hash.to_vec()));
-    challenges
+    // One extra challenge per verifier equation.
+    // [veq1, veq2, veq3, veq4, veq5, veq6 ]
+    let mut challenges_veqs: Vec<Fr> = Vec::new();
+    for _i in 0..8 {
+        challenges_veqs.push(get_challenge_from_current_hash(&current_hash));
+        current_hash = hash_values(current_hash).to_vec();
+    }
+    (chal_sameexp, challenges_gpme, challenges_veqs)
 }
 
-pub fn gprod_and_multiexp_verify(current_hash: Vec<u8>, crs: CrsStruct, vec_crs_h_exp: Vec<Fr>,
-g_b: G1Affine,
-g_c: G1Affine, mut inner_prod: Fr, ciph_t: Vec<G1Affine>, ciph_u: Vec<G1Affine>, g_a: G1Affine,
+pub fn gprod_and_multiexp_verify(crs: CrsStruct, challenges_gpme: Vec<Fr>, challenges_veqs: Vec<Fr>,
+    mut final_exps: FinalExpStruct,
+    vec_crs_h_exp: Vec<Fr>, g_b: G1Affine,
+g_c: G1Affine, mut inner_prod: Fr, ciph_t: Vec<G1Affine>, vec_gamma: Vec<Fr>,
+ ciph_u: Vec<G1Affine>, vec_delta: Vec<Fr>, g_a: G1Affine,
 g_t: G1Affine, g_u: G1Affine, proof_gpme: GpmeProofStruct,
-ciph_r: Vec<G1Affine>, ciph_s: Vec<G1Affine>, g_r: G1Affine, g_s: G1Affine, vec_a: Vec<Fr>,
 ell: usize, n: usize, logn: usize
-) -> (Vec<u8>, bool) {
-
-    let mut final_exps: FinalExpStruct = FinalExpStruct {
-            base: Vec::new(),
-            exponents: Vec::new(),
-    };
-
-
-    // challenges = [zk, u_scale, inner[0], ... , inner[logn - 1], veq1, veq2, veq3, veq4 ]
-    let now = Instant::now();
-    let challenges = get_challenges_gpme_verify(current_hash.clone(), &proof_gpme, logn);
-    let new_now = Instant::now();
-    println!("getting challenges time = {:?}", new_now.duration_since(now));
-
+) -> FinalExpStruct 
+    {
+    // challenges_gpme = [zk, u_scale, inner[0], ... , inner[logn - 1]]
+    //challenges_veqs = [ veq0, veq1, veq2, veq3, veq4, veq5 ]
     // inverse challenges
-    let now = Instant::now();
-    let mut x_invs: Vec<Fr> = challenges[2..(logn+2)].to_vec();
+    let mut x_invs: Vec<Fr> = challenges_gpme[2..(logn+2)].to_vec();
     algebra_core::batch_inversion(&mut x_invs);
-    let new_now = Instant::now();
-    println!("inversion time = {:?}", new_now.duration_since(now));
 
-    final_exps = add_to_final_expo(final_exps, g_r, - Fr::one());
-    final_exps = add_to_final_expo(final_exps, g_s, - challenges[logn + 7]);
-    for i in 0..vec_a.len() {
-        final_exps = add_to_final_expo(final_exps, ciph_r[i], vec_a[i]);
-        final_exps = add_to_final_expo(final_exps, ciph_s[i], challenges[logn + 7] * vec_a[i]);
-    }
-
-    inner_prod += proof_gpme.blinder_gp * challenges[0];
+    inner_prod += proof_gpme.blinder_gp * challenges_gpme[0];
 
     //g_c = g_c + proof_gpme.g_rgp.mul(chal_zk);
-    final_exps = add_to_final_expo(final_exps, g_c, - challenges[logn + 6]);
-    final_exps = add_to_final_expo(final_exps, proof_gpme.g_rgp, - challenges[0] * challenges[logn + 6]);
+    final_exps = add_to_final_expo(final_exps, g_c, - challenges_veqs[4]);
+    final_exps = add_to_final_expo(final_exps, proof_gpme.g_rgp, - challenges_gpme[0] * challenges_veqs[4]);
 
     //g_t = g_t + proof_gpme.g_mebl1.mul(chal_zk);
-    final_exps = add_to_final_expo(final_exps, g_t, - challenges[logn + 4]);
-    final_exps = add_to_final_expo(final_exps, proof_gpme.g_mebl1, - challenges[logn + 4] * challenges[0]);
+    final_exps = add_to_final_expo(final_exps, g_t, - challenges_veqs[2]);
+    final_exps = add_to_final_expo(final_exps, proof_gpme.g_mebl1, - challenges_veqs[2] * challenges_gpme[0]);
 
     //g_u = g_u + proof_gpme.g_mebl2.mul(chal_zk);
-    final_exps = add_to_final_expo(final_exps, g_u, - challenges[logn + 5]);
-    final_exps = add_to_final_expo(final_exps, proof_gpme.g_mebl2, - challenges[logn + 5] * challenges[0]);
+    final_exps = add_to_final_expo(final_exps, g_u, -  challenges_veqs[3]);
+    final_exps = add_to_final_expo(final_exps, proof_gpme.g_mebl2, -  challenges_veqs[3] * challenges_gpme[0]);
 
     //g_a = g_a + proof_gpme.g_rme.mul(chal_zk);
-    final_exps = add_to_final_expo(final_exps, g_a, - challenges[logn + 2]);
-    final_exps = add_to_final_expo(final_exps, proof_gpme.g_rme, - challenges[logn + 2] * challenges[0]);
+    final_exps = add_to_final_expo(final_exps, g_a, -  challenges_veqs[0]);
+    final_exps = add_to_final_expo(final_exps, proof_gpme.g_rme, - challenges_veqs[0] * challenges_gpme[0]);
 
     // g_b = g_b + crs.u.mul(chal_uscale * b_final * c_final - chal_uscale * inner_prod)
-    final_exps = add_to_final_expo(final_exps, g_b, - challenges[logn + 3]);
+    final_exps = add_to_final_expo(final_exps, g_b, - challenges_veqs[1]);
     final_exps = add_to_final_expo(final_exps, crs.u,
-        challenges[1] * challenges[logn + 3] * proof_gpme.b_final * proof_gpme.c_final
-        - challenges[logn + 3] * challenges[1] * inner_prod);
+        challenges_gpme[1] * challenges_veqs[1] * proof_gpme.b_final * proof_gpme.c_final
+        - challenges_veqs[1] * challenges_gpme[1] * inner_prod);
 
     let mut vec_crs_g_exp: Vec<Fr> = Vec::new();
     let mut vec_crs_h_shifted: Vec<Fr> = Vec::new();
@@ -877,92 +918,88 @@ ell: usize, n: usize, logn: usize
         vec_crs_h_shifted.push(Fr::one());
     }
 
+
+    for i in 0..n {
+        for j in 0..crs.bitstring[i].len() {
+            vec_crs_g_exp[i] *= x_invs[crs.bitstring[i][j]];
+            vec_crs_h_shifted[i] *= challenges_gpme[2 + crs.bitstring[i][j]];
+        }
+    }
+
     let mut current_n: usize = n;
     for j in 0..logn {
         current_n = ( (current_n as u32) / 2) as usize;
 
 
-        let chal_x = challenges[2 + j];
+        let chal_x = challenges_gpme[2 + j];
         let chal_inv_x = x_invs[j];
-
-        for i in 0..n {
-            let bitstring = format!("{:b}", i);
-            let mut bit_vec: Vec<char> = bitstring.chars().collect();
-            bit_vec.reverse();
-            while bit_vec.len() < logn {
-                bit_vec.push('0');
-            }
-
-            if bit_vec[logn - j - 1] == '1' {
-                vec_crs_g_exp[i] = vec_crs_g_exp[i] * chal_inv_x;
-                vec_crs_h_shifted[i] = vec_crs_h_shifted[i] * chal_x;
-            }
-        }
 
         //[g_zlme1, g_zlme2, g_zrme1, g_zrme2, g_clgp, g_crgp, g_clme, g_crme]
         //[g_zlme1, g_zlme2, g_zrme1, g_zrme2, g_clgpb, g_clgpc, g_crgpb, g_crgpc, g_clme, g_crme]
 
         //g_b = proof_gpme.proof[j][4].mul(chal_x) + g_b + proof_gpme.proof[j][6].mul(chal_inv_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][4], - challenges[logn + 3] * chal_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][6], - challenges[logn + 3] * chal_inv_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][4], - challenges_veqs[1] * chal_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][6], - challenges_veqs[1] * chal_inv_x);
 
         //g_c = proof_gpme.proof[j][5].mul(chal_x) + g_c + proof_gpme.proof[j][7].mul(chal_inv_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][5], - challenges[logn + 6] * chal_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][7], - challenges[logn + 6] * chal_inv_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][5], - challenges_veqs[4] * chal_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][7], - challenges_veqs[4] * chal_inv_x);
 
         //g_t = proof_gpme.proof[j][0].mul(chal_x) + g_t + proof_gpme.proof[j][2].mul(chal_inv_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][0], - challenges[logn + 4] * chal_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][2], - challenges[logn + 4] * chal_inv_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][0], - challenges_veqs[2] * chal_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][2], - challenges_veqs[2] * chal_inv_x);
 
         //g_u = proof_gpme.proof[j][1].mul(chal_x) + g_u + proof_gpme.proof[j][3].mul(chal_inv_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][1], - challenges[logn + 5] * chal_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][3], - challenges[logn + 5] * chal_inv_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][1], - challenges_veqs[3] * chal_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][3], - challenges_veqs[3] * chal_inv_x);
 
         //g_a = proof_gpme.proof[j][8].mul(chal_x) + g_a + proof_gpme.proof[j][9].mul(chal_inv_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][8], - challenges[logn + 2] * chal_x);
-        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][9], - challenges[logn + 2] * chal_inv_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][8], - challenges_veqs[0] * chal_x);
+        final_exps = add_to_final_expo(final_exps, proof_gpme.proof[j][9], - challenges_veqs[0] * chal_inv_x);
 
     }
 
+
     //    let b1 = (g_ciph_t_final.mul(- proof_gpme.exp_final) + g_t).into_affine().infinity;
     //    let b2 = (g_ciph_u_final.mul(- proof_gpme.exp_final) + g_u).into_affine().infinity;
-    for i in 0..n {
-        final_exps = add_to_final_expo(final_exps, ciph_t[i], challenges[logn + 4] * vec_crs_h_shifted[i]
+    for i in 0..ell {
+        final_exps = add_to_final_expo(final_exps, ciph_t[i], challenges_veqs[2] * vec_crs_h_shifted[i]
             * proof_gpme.a_final);
 
-        final_exps = add_to_final_expo(final_exps, ciph_u[i], challenges[logn + 5] * vec_crs_h_shifted[i]
+        final_exps = add_to_final_expo(final_exps, ciph_u[i], challenges_veqs[3] * vec_crs_h_shifted[i]
+                * proof_gpme.a_final);
+    }
+
+    for i in ell..n {
+        final_exps = add_to_final_expo(final_exps, crs.crs_se1, vec_gamma[i - ell] * challenges_veqs[2] * vec_crs_h_shifted[i]
+            * proof_gpme.a_final);
+
+        final_exps = add_to_final_expo(final_exps, crs.crs_se2, vec_delta[i - ell] * challenges_veqs[3] * vec_crs_h_shifted[i]
                 * proof_gpme.a_final);
     }
 
 
-    let mut vec_crs_exp: Fr = challenges[logn + 3] * vec_crs_g_exp[0] +
-    challenges[logn + 2] * vec_crs_h_shifted[0] * proof_gpme.a_final
-    + challenges[logn + 6] * vec_crs_h_exp[0] * vec_crs_h_shifted[ell-1]*proof_gpme.c_final;
+    let mut vec_crs_exp: Fr = challenges_veqs[1] * vec_crs_g_exp[0] +
+    challenges_veqs[0] * vec_crs_h_shifted[0] * proof_gpme.a_final
+    + challenges_veqs[4] * vec_crs_h_exp[0] * vec_crs_h_shifted[ell-1]*proof_gpme.c_final;
 
     final_exps = add_to_final_expo(final_exps, crs.crs_g[0], vec_crs_exp);
 
     for i in 1..ell {
-        vec_crs_exp = challenges[logn + 3] * vec_crs_g_exp[i] +
-        challenges[logn + 2] * vec_crs_h_shifted[i] * proof_gpme.a_final
-        + challenges[logn + 6] * vec_crs_h_exp[i] * vec_crs_h_shifted[i-1]*proof_gpme.c_final;
+        vec_crs_exp = challenges_veqs[1] * vec_crs_g_exp[i] +
+        challenges_veqs[0] * vec_crs_h_shifted[i] * proof_gpme.a_final
+        + challenges_veqs[4] * vec_crs_h_exp[i] * vec_crs_h_shifted[i-1]*proof_gpme.c_final;
 
         final_exps = add_to_final_expo(final_exps, crs.crs_g[i], vec_crs_exp);
     }
 
     for i in ell..n {
-        vec_crs_exp = challenges[logn + 3] * vec_crs_g_exp[i] +
-        challenges[logn + 2] * vec_crs_h_shifted[i] * proof_gpme.a_final
-        + challenges[logn + 6] * vec_crs_h_exp[i] * vec_crs_h_shifted[i]*proof_gpme.c_final;
+        vec_crs_exp = challenges_veqs[1] * vec_crs_g_exp[i] +
+        challenges_veqs[0] * vec_crs_h_shifted[i] * proof_gpme.a_final
+        + challenges_veqs[4] * vec_crs_h_exp[i] * vec_crs_h_shifted[i]*proof_gpme.c_final;
 
         final_exps = add_to_final_expo(final_exps, crs.crs_g[i], vec_crs_exp);
     }
 
-    let now = Instant::now();
-    let vec_formatted = final_exps.exponents.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let g_expected: G1Affine = VariableBaseMSM::multi_scalar_mul(final_exps.base.as_slice(), vec_formatted.as_slice()).into_affine();
-    let b3 = g_expected.infinity;
-    let new_now = Instant::now();
-    println!("final exponentiation time = {:?}", new_now.duration_since(now));
-
-    (current_hash, b3)
+    final_exps
 }

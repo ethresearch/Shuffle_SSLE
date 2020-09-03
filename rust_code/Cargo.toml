@@ -10,5 +10,6 @@ edition = "2018"
 algebra = { git = "https://github.com/scipr-lab/zexe", package = "algebra", features = [ "bls12_381" ] }
 algebra-core = { git = "https://github.com/scipr-lab/zexe", package = "algebra-core", features = [ "parallel" ] }
 ff-fft = {git = "https://github.com/scipr-lab/zexe", package = "ff-fft"}
-sha2 = "0.9.1"
+#sha2 = "0.9.1"
+blake2 = "0.9.0"
 rand = "0.7.3"
