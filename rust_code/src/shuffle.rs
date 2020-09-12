@@ -59,8 +59,10 @@ pub struct GprodVerifierInfoStruct {
 
 pub struct GpmeProofStruct {
     pub g_rgp: G1Affine,
+    pub g_sgp: G1Affine,
     pub g_rme: G1Affine,
-    pub blinder_gp: Fr,
+    pub blinder1_gp: Fr,
+    pub blinder2_gp: Fr,
     pub g_mebl1: G1Affine,
     pub g_mebl2: G1Affine,
     pub proof: Vec<[G1Affine; 10]>,
@@ -359,7 +361,6 @@ pub fn gprod_prove(mut current_hash: Vec<u8>, crs: &CrsStruct, gprod: Fr,
 
 
     let mut hash_input = current_hash;
-    hash_input.append(&mut to_bytes!(gprod).unwrap());
     hash_input.append(&mut to_bytes!(blinder).unwrap());
     hash_input.append(&mut to_bytes!(g_b).unwrap());
 
@@ -461,16 +462,23 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
 
     let mut rng = thread_rng();
     let mut vec_rgp: Vec<Fr> = Vec::new();
+    let mut vec_sgp: Vec<Fr> = Vec::new();
     let mut vec_rme: Vec<Fr> = Vec::new();
 
     for _i in 0..n {
         vec_rgp.push(rng.gen());
+        vec_sgp.push(rng.gen());
         vec_rme.push(rng.gen());
     }
 
     let vec_formatted = vec_rgp.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
-    let g_rgp = VariableBaseMSM::multi_scalar_mul(crs_h_scaled.as_slice(), vec_formatted.as_slice()).into_affine();
-    let blinder_gp = get_inner_prod(&vec_b, &vec_rgp);
+    let g_rgp = VariableBaseMSM::multi_scalar_mul(crs.crs_g.as_slice(), vec_formatted.as_slice()).into_affine();
+
+    let vec_formatted = vec_sgp.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
+    let g_sgp = VariableBaseMSM::multi_scalar_mul(crs_h_scaled.as_slice(), vec_formatted.as_slice()).into_affine();
+
+    let blinder1_gp = get_inner_prod(&vec_b, &vec_sgp) + get_inner_prod(&vec_c, &vec_rgp);
+    let blinder2_gp = get_inner_prod(&vec_rgp, &vec_sgp) ;
 
     let vec_formatted = vec_rme.iter().map(|x| x.into_repr()).collect::<Vec<_>>();
     let g_rme = VariableBaseMSM::multi_scalar_mul(crs.crs_g.as_slice(), vec_formatted.as_slice()).into_affine();
@@ -480,7 +488,9 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
 
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(g_rgp).unwrap());
-    hash_input.append(&mut to_bytes!(blinder_gp).unwrap());
+    hash_input.append(&mut to_bytes!(g_sgp).unwrap());
+    hash_input.append(&mut to_bytes!(blinder1_gp).unwrap());
+    hash_input.append(&mut to_bytes!(blinder2_gp).unwrap());
     hash_input.append(&mut to_bytes!(g_rme).unwrap());
     hash_input.append(&mut to_bytes!(g_mebl1).unwrap());
     hash_input.append(&mut to_bytes!(g_mebl2).unwrap());
@@ -488,10 +498,11 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
     current_hash = hash_values(hash_input);
     let chal_x = get_challenge_from_current_hash(&current_hash);
 
-    inner_prod += blinder_gp * chal_x;
+    inner_prod += blinder1_gp * chal_x + blinder2_gp * chal_x * chal_x;
 
     for i in 0..n {
-        vec_c[i] += vec_rgp[i] * chal_x;
+        vec_b[i] += vec_rgp[i] * chal_x;
+        vec_c[i] += vec_sgp[i] * chal_x;
         vec_exp[i] += vec_rme[i] * chal_x;
     }
 
@@ -595,8 +606,10 @@ mut ciph_t: Vec<G1Affine>, mut ciph_u: Vec<G1Affine>, mut vec_exp: Vec<Fr>, n: u
 
     let proof_gpme = GpmeProofStruct {
         g_rgp: g_rgp,
+        g_sgp: g_sgp,
         g_rme: g_rme,
-        blinder_gp: blinder_gp,
+        blinder1_gp: blinder1_gp,
+        blinder2_gp: blinder2_gp,
         g_mebl1: g_mebl1,
         g_mebl2: g_mebl2,
         proof: proof,
@@ -733,7 +746,6 @@ pub fn gprod_verify(mut current_hash: Vec<u8>, crs: &CrsStruct, g_a1: G1Affine, 
     let num_blinders = n - ell;
 
     let mut hash_input = current_hash;
-    hash_input.append(&mut to_bytes!(gprod).unwrap());
     hash_input.append(&mut to_bytes!(proof_gprod.blinder).unwrap());
     hash_input.append(&mut to_bytes!(proof_gprod.g_b).unwrap());
 
@@ -828,7 +840,9 @@ pub fn get_challenges(mut current_hash: Vec<u8>,
     // [zk]
     let mut hash_input = current_hash;
     hash_input.append(&mut to_bytes!(proof_gpme.g_rgp).unwrap());
-    hash_input.append(&mut to_bytes!(proof_gpme.blinder_gp).unwrap());
+    hash_input.append(&mut to_bytes!(proof_gpme.g_sgp).unwrap());
+    hash_input.append(&mut to_bytes!(proof_gpme.blinder1_gp).unwrap());
+    hash_input.append(&mut to_bytes!(proof_gpme.blinder2_gp).unwrap());
     hash_input.append(&mut to_bytes!(proof_gpme.g_rme).unwrap());
     hash_input.append(&mut to_bytes!(proof_gpme.g_mebl1).unwrap());
     hash_input.append(&mut to_bytes!(proof_gpme.g_mebl2).unwrap());
@@ -878,7 +892,7 @@ g_c: G1Affine, mut inner_prod: Fr, ciph_t: Vec<G1Affine>, vec_gamma: Vec<Fr>,
  ciph_u: Vec<G1Affine>, vec_delta: Vec<Fr>, g_a: G1Affine,
 g_t: G1Affine, g_u: G1Affine, proof_gpme: GpmeProofStruct,
 ell: usize, n: usize, logn: usize
-) -> FinalExpStruct 
+) -> FinalExpStruct
     {
     // challenges_gpme = [zk, u_scale, inner[0], ... , inner[logn - 1]]
     //challenges_veqs = [ veq0, veq1, veq2, veq3, veq4, veq5 ]
@@ -886,11 +900,11 @@ ell: usize, n: usize, logn: usize
     let mut x_invs: Vec<Fr> = challenges_gpme[2..(logn+2)].to_vec();
     algebra_core::batch_inversion(&mut x_invs);
 
-    inner_prod += proof_gpme.blinder_gp * challenges_gpme[0];
+    inner_prod += proof_gpme.blinder1_gp * challenges_gpme[0] + proof_gpme.blinder2_gp * challenges_gpme[0] * challenges_gpme[0];
 
-    //g_c = g_c + proof_gpme.g_rgp.mul(chal_zk);
+    //g_c = g_c + proof_gpme.g_sgp.mul(chal_zk);
     final_exps = add_to_final_expo(final_exps, g_c, - challenges_veqs[4]);
-    final_exps = add_to_final_expo(final_exps, proof_gpme.g_rgp, - challenges_gpme[0] * challenges_veqs[4]);
+    final_exps = add_to_final_expo(final_exps, proof_gpme.g_sgp, - challenges_gpme[0] * challenges_veqs[4]);
 
     //g_t = g_t + proof_gpme.g_mebl1.mul(chal_zk);
     final_exps = add_to_final_expo(final_exps, g_t, - challenges_veqs[2]);
@@ -904,8 +918,9 @@ ell: usize, n: usize, logn: usize
     final_exps = add_to_final_expo(final_exps, g_a, -  challenges_veqs[0]);
     final_exps = add_to_final_expo(final_exps, proof_gpme.g_rme, - challenges_veqs[0] * challenges_gpme[0]);
 
-    // g_b = g_b + crs.u.mul(chal_uscale * b_final * c_final - chal_uscale * inner_prod)
+    // g_b = g_b + crs.u.mul(chal_uscale * b_final * c_final - chal_uscale * inner_prod) + proof_gpme.g_rgp.mul(chal_zk);
     final_exps = add_to_final_expo(final_exps, g_b, - challenges_veqs[1]);
+    final_exps = add_to_final_expo(final_exps, proof_gpme.g_rgp, - challenges_gpme[0] * challenges_veqs[1]);
     final_exps = add_to_final_expo(final_exps, crs.u,
         challenges_gpme[1] * challenges_veqs[1] * proof_gpme.b_final * proof_gpme.c_final
         - challenges_veqs[1] * challenges_gpme[1] * inner_prod);

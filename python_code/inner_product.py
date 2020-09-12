@@ -14,28 +14,34 @@ def prove_multiexp_and_gprod_inner(current_hash, crs, vec_b, vec_c,inner_prod,
     proof = []
 
     ### Adding in zero knowledge
-    vec_rgp = [0]*n; vec_rme = [0]*n;
+    vec_rgp = [0]*n; vec_sgp = [0]*n; vec_rme = [0]*n;
     for i in range(n):
         vec_rgp[i] = randbelow(curve_order)
+        vec_sgp[i] = randbelow(curve_order)
         vec_rme[i] = randbelow(curve_order)
 
-    Rgp = compute_multiexp(crs_h_scaled[:], vec_rgp[:])
-    blgp = compute_innerprod(vec_b[:], vec_rgp[:])
+    Rgp = compute_multiexp(crs_g[:], vec_rgp[:])
+    Sgp = compute_multiexp(crs_h_scaled[:], vec_sgp[:])
+    blgp1 = (compute_innerprod(vec_b[:], vec_sgp[:]) + compute_innerprod(vec_c[:], vec_rgp[:])) % curve_order
+    blgp2 = compute_innerprod(vec_rgp[:], vec_sgp[:])
 
     Rme = compute_multiexp(crs_h[:], vec_rme[:])
     Bl1me = compute_multiexp(ciphertexts_1[:], vec_rme[:])
     Bl2me = compute_multiexp(ciphertexts_2[:], vec_rme[:])
 
-    zkinfo = [Rgp, Rme, blgp, Bl1me, Bl2me]
+    zkinfo = [Rgp, Sgp, Rme, blgp1, blgp2, Bl1me, Bl2me]
 
-    current_hash = hash_integers([current_hash,int(Rgp[0]),int(Rgp[1]), int(Rgp[2]), blgp,
+    current_hash = hash_integers([current_hash,int(Rgp[0]),int(Rgp[1]), int(Rgp[2]),
+    int(Sgp[0]),int(Sgp[1]), int(Sgp[2]),
+    blgp1, blgp2,
     int(Rme[0]),int(Rme[1]), int(Rme[2]),
     int(Bl1me[0]),int(Bl1me[1]), int(Bl1me[2]),int(Bl2me[0]),int(Bl2me[1]), int(Bl2me[2])])
     x = current_hash % curve_order
 
-    inner_prod = (inner_prod + blgp * x ) % curve_order
+    inner_prod = (inner_prod + blgp1 * x + blgp2 * x**2) % curve_order
     for i in range(n):
-        vec_c[i] = (vec_c[i] + vec_rgp[i] * x) % curve_order
+        vec_b[i] = (vec_b[i] + vec_rgp[i] * x) % curve_order
+        vec_c[i] = (vec_c[i] + vec_sgp[i] * x) % curve_order
         vec_exp[i] = (vec_exp[i] + vec_rme[i] * x) % curve_order
 
 
@@ -104,15 +110,17 @@ def verify_multiexp_and_gprod_inner(current_hash, crs, vec_crs_h_exp, len_gprod,
 
     ### Adding in zero knowledge
     [zkinfo, proof, final_values] = inner_proof[:]
-    [Rgp, Rme, blgp, Bl1me, Bl2me] = zkinfo[:]
+    [Rgp, Sgp, Rme, blgp1, blgp2, Bl1me, Bl2me] = zkinfo[:]
 
-    current_hash = hash_integers([current_hash,int(Rgp[0]),int(Rgp[1]), int(Rgp[2]), blgp,
+    current_hash = hash_integers([current_hash,int(Rgp[0]),int(Rgp[1]), int(Rgp[2]),
+    int(Sgp[0]),int(Sgp[1]), int(Sgp[2]), blgp1, blgp2,
     int(Rme[0]),int(Rme[1]), int(Rme[2]),
     int(Bl1me[0]),int(Bl1me[1]), int(Bl1me[2]),int(Bl2me[0]),int(Bl2me[1]), int(Bl2me[2])])
     x = current_hash % curve_order
 
-    inner_prod = (inner_prod + blgp * x ) % curve_order
-    C = add(C, multiply(Rgp,x))
+    inner_prod = (inner_prod + blgp1 * x + blgp2 * x**2) % curve_order
+    B = add(B, multiply(Rgp,x))
+    C = add(C, multiply(Sgp,x))
     commit_exps = add(commit_exps, multiply(Rme, x))
     multiexp_1 = add(multiexp_1, multiply(Bl1me, x))
     multiexp_2 = add(multiexp_2, multiply(Bl2me, x))
